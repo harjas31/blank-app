@@ -1,158 +1,123 @@
 import streamlit as st
 import pandas as pd
-import threading
-import queue
+import requests
+from bs4 import BeautifulSoup
+import time
+import random
 import logging
-from datetime import datetime
-import os
-import sys
-
-# Placeholder imports - replace with actual scraper modules when implemented
-import amazon_scraper
-import flipkart_scraper
-import utils
-
-# Increase recursion limit
-sys.setrecursionlimit(10000)
-
-# Global stop_event
-global_stop_event = threading.Event()
+import io
 
 # Set up logging
-class QueueHandler(logging.Handler):
-    def __init__(self, log_queue):
-        super().__init__()
-        self.log_queue = log_queue
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('Amazon')
 
-    def emit(self, record):
-        self.log_queue.put(record)
-
-def setup_logging():
-    log_queues = {'Amazon': queue.Queue(), 'Flipkart': queue.Queue()}
-    for platform in ['Amazon', 'Flipkart']:
-        logger = logging.getLogger(platform)
-        logger.setLevel(logging.INFO)
-        queue_handler = QueueHandler(log_queues[platform])
-        queue_handler.setLevel(logging.INFO)
-        logger.addHandler(queue_handler)
-    return log_queues
-
-def get_stop_event():
-    global global_stop_event
-    return global_stop_event
-
-def perform_search(platforms, keywords, ranking):
-    stop_event = get_stop_event()
-    stop_event.clear()
-    st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
-    st.session_state.search_threads = {}
-
-    for platform in platforms:
-        thread = threading.Thread(target=search_thread, args=(platform, keywords, ranking))
-        st.session_state.search_threads[platform] = thread
-        thread.start()
-
-def search_thread(platform, keywords, ranking):
-    logger = logging.getLogger(platform)
-    stop_event = get_stop_event()
+def search(keywords, num_products=30):
     try:
-        scraper_module = amazon_scraper if platform == "Amazon" else flipkart_scraper
-        results = {}
-        total_keywords = len(keywords)
-        for index, keyword in enumerate(keywords, 1):
-            if stop_event.is_set():
-                logger.info(f"Search stopped for {platform}")
-                return
-            logger.info(f"Searching for keyword: {keyword} ({index}/{total_keywords})")
-            results[keyword] = scraper_module.search(keyword, ranking)
-            logger.info(f"Search completed for keyword: {keyword} ({index}/{total_keywords})")
-        
-        st.session_state.results[platform] = results
-        logger.info(f"Processing done for {platform}, your file is ready to export")
-        
+        all_data = fetch_amazon_data(keywords, num_products)
+        products = process_amazon_data(all_data, num_products)
+        if not products:
+            error_msg = f"No products found for '{keywords}'"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        return products
     except Exception as e:
-        error_msg = f"Error during {platform} search: {str(e)}"
+        error_msg = f"Error during Amazon search: {str(e)}"
         logger.error(error_msg)
-        st.error(error_msg)
+        raise Exception(error_msg)
 
-def export_results(platform):
-    results = st.session_state.results.get(platform, {})
-    if not results:
-        st.error(f"No {platform} results to export. Please perform a search first.")
-        return
+def fetch_amazon_data(keyword, num_products):
+    all_data = []
+    url = f"https://www.amazon.in/s?k={keyword.replace(' ', '+')}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
 
-    df = pd.DataFrame()
-    for keyword, products in results.items():
-        keyword_df = pd.DataFrame(products)
-        keyword_df['Keyword'] = keyword
-        df = pd.concat([df, keyword_df], ignore_index=True)
+    page = 1
+    while len(all_data) * 16 < num_products:  # Assuming 16 products per page
+        try:
+            logger.info(f"Fetching page {page} for '{keyword}'")
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, 'html.parser')
+            all_data.append(soup)
 
-    csv = df.to_csv(index=False)
-    st.download_button(
-        label=f"Download {platform} Results",
-        data=csv,
-        file_name=f"{platform}_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-    )
+            next_page = soup.find("a", class_="s-pagination-next")
+            if next_page and "href" in next_page.attrs:
+                url = "https://www.amazon.in" + next_page["href"]
+                logger.info(f"Fetched page {page}, moving to next page...")
+                page += 1
+                time.sleep(random.uniform(2, 5))
+            else:
+                logger.info(f"No more pages found for '{keyword}'")
+                break
+        except requests.RequestException as e:
+            logger.error(f"An error occurred while fetching results for '{keyword}' on page {page}: {e}")
+            break
+
+    return all_data
+
+def process_amazon_data(all_data, num_products=30):
+    products = []
+    for soup in all_data:
+        search_results = soup.find_all("div", {"data-component-type": "s-search-result"})
+
+        for result in search_results:
+            if len(products) >= num_products:
+                break
+
+            asin = result.get("data-asin")
+            title_element = result.find("h2", class_="a-size-mini")
+            title = title_element.text.strip() if title_element else "Title not found"
+            
+            price_element = result.find("span", class_="a-price-whole")
+            if not price_element:
+                price_element = result.find("span", class_="a-color-base")
+            price = price_element.text.strip() if price_element else "n.a"
+
+            products.append({
+                "rank": len(products) + 1,
+                "asin": asin,
+                "title": title,
+                "price": price
+            })
+
+        if len(products) >= num_products:
+            break
+
+    logger.info(f"Processed {len(products)} products")
+    return products[:num_products]
 
 def main():
-    st.title("CM3 Positive*")
+    st.title("Amazon Product Scraper")
 
-    # Initialize session state
-    if 'results' not in st.session_state:
-        st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
-    if 'search_threads' not in st.session_state:
-        st.session_state.search_threads = {}
-    if 'log_queues' not in st.session_state:
-        st.session_state.log_queues = setup_logging()
+    keyword = st.text_input("Enter a keyword to search on Amazon:")
+    num_products = st.number_input("Number of products to fetch:", min_value=1, max_value=100, value=30)
 
-    # Sidebar for input parameters
-    st.sidebar.header("Search Parameters")
-    platforms = st.sidebar.multiselect("Select Platforms", ["Amazon", "Flipkart"], default=["Amazon", "Flipkart"])
-    ranking = st.sidebar.number_input("Ranking", min_value=1, value=10)
-    keywords = st.sidebar.text_area("Keywords (one per line)").split('\n')
-    keywords = [k.strip() for k in keywords if k.strip()]
-
-    if st.sidebar.button("Start Search"):
-        if not platforms:
-            st.sidebar.error("Please select at least one platform.")
-        elif not keywords:
-            st.sidebar.error("Please enter at least one keyword.")
-        else:
-            perform_search(platforms, keywords, ranking)
-
-    # Main content area
-    for platform in platforms:
-        st.header(f"{platform} Results")
-        log_output = st.empty()
-
-        # Display logs
-        log_messages = []
-        while True:
+    if st.button("Search"):
+        if keyword:
             try:
-                record = st.session_state.log_queues[platform].get_nowait()
-                message = record.getMessage()
-                if not any(keyword in message.lower() for keyword in ["page", "fetched", "moving"]):
-                    formatted_message = f"{datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S')} - {platform} - {record.levelname} - {message}"
-                    log_messages.append(formatted_message)
-            except queue.Empty:
-                break
-        
-        log_output.text_area(f"Logs for {platform}", "\n".join(log_messages), height=200, key=f"logs_{platform}")
+                with st.spinner("Searching for products..."):
+                    products = search(keyword, num_products)
+                
+                df = pd.DataFrame(products)
+                st.write(df)
 
-        # Export button
-        if platform in st.session_state.results and st.session_state.results[platform]:
-            export_results(platform)
-
-    # Stop button
-    if st.session_state.search_threads:
-        if st.button("Stop Search"):
-            stop_event = get_stop_event()
-            stop_event.set()
-            for thread in st.session_state.search_threads.values():
-                thread.join()
-            st.session_state.search_threads.clear()
-            st.success("Search stopped.")
+                csv = df.to_csv(index=False)
+                csv_bytes = csv.encode()
+                
+                st.download_button(
+                    label="Download CSV",
+                    data=csv_bytes,
+                    file_name=f"amazon_products_{keyword}.csv",
+                    mime="text/csv",
+                )
+            except Exception as e:
+                st.error(str(e))
+        else:
+            st.warning("Please enter a keyword to search.")
 
 if __name__ == "__main__":
     main()
