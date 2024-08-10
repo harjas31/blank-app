@@ -15,6 +15,9 @@ import utils
 # Increase recursion limit
 sys.setrecursionlimit(10000)
 
+# Global stop_event
+global_stop_event = threading.Event()
+
 # Set up logging
 class QueueHandler(logging.Handler):
     def __init__(self, log_queue):
@@ -34,16 +37,13 @@ def setup_logging():
         logger.addHandler(queue_handler)
     return log_queues
 
-# Initialize session state
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = True
-    st.session_state.log_queues = setup_logging()
-    st.session_state.search_threads = {}
-    st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
-    st.session_state.stop_event = threading.Event()
+def get_stop_event():
+    global global_stop_event
+    return global_stop_event
 
 def perform_search(platforms, keywords, ranking):
-    st.session_state.stop_event.clear()
+    stop_event = get_stop_event()
+    stop_event.clear()
     st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
     st.session_state.search_threads = {}
 
@@ -54,12 +54,13 @@ def perform_search(platforms, keywords, ranking):
 
 def search_thread(platform, keywords, ranking):
     logger = logging.getLogger(platform)
+    stop_event = get_stop_event()
     try:
         scraper_module = amazon_scraper if platform == "Amazon" else flipkart_scraper
         results = {}
         total_keywords = len(keywords)
         for index, keyword in enumerate(keywords, 1):
-            if st.session_state.stop_event.is_set():
+            if stop_event.is_set():
                 logger.info(f"Search stopped for {platform}")
                 return
             logger.info(f"Searching for keyword: {keyword} ({index}/{total_keywords})")
@@ -97,13 +98,13 @@ def export_results(platform):
 def main():
     st.title("CM3 Positive*")
 
-    # Ensure session state is initialized
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-        st.session_state.log_queues = setup_logging()
-        st.session_state.search_threads = {}
+    # Initialize session state
+    if 'results' not in st.session_state:
         st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
-        st.session_state.stop_event = threading.Event()
+    if 'search_threads' not in st.session_state:
+        st.session_state.search_threads = {}
+    if 'log_queues' not in st.session_state:
+        st.session_state.log_queues = setup_logging()
 
     # Sidebar for input parameters
     st.sidebar.header("Search Parameters")
@@ -146,7 +147,8 @@ def main():
     # Stop button
     if st.session_state.search_threads:
         if st.button("Stop Search"):
-            st.session_state.stop_event.set()
+            stop_event = get_stop_event()
+            stop_event.set()
             for thread in st.session_state.search_threads.values():
                 thread.join()
             st.session_state.search_threads.clear()
