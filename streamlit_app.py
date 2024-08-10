@@ -35,13 +35,11 @@ def setup_logging():
     return log_queues
 
 # Initialize session state
-if 'log_queues' not in st.session_state:
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = True
     st.session_state.log_queues = setup_logging()
-if 'search_threads' not in st.session_state:
     st.session_state.search_threads = {}
-if 'results' not in st.session_state:
     st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
-if 'stop_event' not in st.session_state:
     st.session_state.stop_event = threading.Event()
 
 def perform_search(platforms, keywords, ranking):
