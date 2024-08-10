@@ -129,7 +129,7 @@ def main():
             except queue.Empty:
                 break
         
-        log_output.text_area("Logs", "\n".join(log_messages), height=200)
+        log_output.text_area(f"Logs for {platform}", "\n".join(log_messages), height=200, key=f"logs_{platform}")
 
         # Export button
         if platform in st.session_state.results and st.session_state.results[platform]:
