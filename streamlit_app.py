@@ -97,6 +97,14 @@ def export_results(platform):
 def main():
     st.title("CM3 Positive*")
 
+    # Ensure session state is initialized
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+        st.session_state.log_queues = setup_logging()
+        st.session_state.search_threads = {}
+        st.session_state.results = {'Amazon': {}, 'Flipkart': {}}
+        st.session_state.stop_event = threading.Event()
+
     # Sidebar for input parameters
     st.sidebar.header("Search Parameters")
     platforms = st.sidebar.multiselect("Select Platforms", ["Amazon", "Flipkart"], default=["Amazon", "Flipkart"])
