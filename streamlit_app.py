@@ -6,10 +6,28 @@ import time
 import random
 import logging
 import io
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Amazon')
+
+# List of user agents to rotate
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36",
+]
+
+def get_session():
+    session = requests.Session()
+    retry = Retry(total=5, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 def search(keywords, num_products=30):
     try:
@@ -28,18 +46,19 @@ def search(keywords, num_products=30):
 def fetch_amazon_data(keyword, num_products):
     all_data = []
     url = f"https://www.amazon.in/s?k={keyword.replace(' ', '+')}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-    }
+    session = get_session()
 
     page = 1
     while len(all_data) * 16 < num_products:  # Assuming 16 products per page
         try:
             logger.info(f"Fetching page {page} for '{keyword}'")
-            response = requests.get(url, headers=headers, timeout=10)
+            headers = {
+                "User-Agent": random.choice(USER_AGENTS),
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+            }
+            response = session.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             soup = BeautifulSoup(response.content, 'html.parser')
             all_data.append(soup)
@@ -55,6 +74,8 @@ def fetch_amazon_data(keyword, num_products):
                 break
         except requests.RequestException as e:
             logger.error(f"An error occurred while fetching results for '{keyword}' on page {page}: {e}")
+            if len(all_data) == 0:
+                raise Exception(f"Failed to fetch any data for '{keyword}'. Please try again later.")
             break
 
     return all_data
